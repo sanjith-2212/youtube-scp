@@ -1,0 +1,12 @@
+yt-dlp
+boto3
+openai-whisper
+google-api-python-client
+pyyaml
+pandas
+tqdm
+soundfile
+librosa
+torch
+torchaudio
+silero-vad

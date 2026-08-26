@@ -1,0 +1,24 @@
+# Secrets -- settings.yaml holds the YouTube API key and internal proxy IPs.
+# Commit config/settings.example.yaml instead and copy it locally.
+config/settings.yaml
+cookies/
+*.cookies.txt
+
+# Scraped audio and pipeline state (45G+)
+output/
+
+# Environments and vendored third-party trees
+venv/
+google-cloud-sdk/
+pot_server/
+node_modules/
+
+# Runtime artefacts
+logs/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Local tooling
+.claude/settings.local.json
+.DS_Store

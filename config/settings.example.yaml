@@ -1,0 +1,54 @@
+# Copy to settings.yaml and fill in. settings.yaml is gitignored -- it holds a
+# live API key and internal proxy addresses, neither of which belong in a repo.
+youtube_api_key: "YOUR_YOUTUBE_DATA_API_KEY"
+
+s3:
+  bucket: "detectifai-data"
+  prefix: "real/v1"
+  region: "ap-south-1"
+
+audio:
+  sample_rate: 48000
+  channels: 1
+  bit_depth: 16
+  format: "wav"
+  max_segment_duration: 8.0
+  min_segment_duration: 1.0
+  min_speech_ratio: 0.7
+
+processing:
+  num_workers: 24
+  downloads_per_ip: 8
+  # Download budget shared by ALL language workers, not per worker. Exit IPs in
+  # a single /24 are throttled by YouTube as one client: ~230 videos in 60 min
+  # tripped the bot check, hence the conservative rpm.
+  global_requests_per_min: 2.5
+  ratelimit_backoff_base_sec: 900      # first bot check -> 15 min pause
+  ratelimit_backoff_max_sec: 5400      # cap escalation at 90 min
+  ratelimit_strike_reset_sec: 1800     # 30 min clean -> forget escalation
+  max_ratelimit_retries: 3
+  max_retries: 3
+  backoff_factor: 2.0
+  max_videos_per_channel: 200
+  whisper_model: "medium"
+  whisper_device: "cuda"
+  max_segments_per_video: 5
+  batch_upload_size: 50
+
+# A null address means "use the host's own egress, no proxy".
+proxies:
+  - name: "local"
+    address: null
+  - name: "proxy-1"
+    address: "http://PROXY_HOST_1:8080"
+  - name: "proxy-2"
+    address: "http://PROXY_HOST_2:8080"
+
+logging:
+  level: "INFO"
+  log_dir: "./logs"
+  rotate_mb: 50
+
+local_staging:
+  dir: "./output"
+  cleanup_after_upload: true
