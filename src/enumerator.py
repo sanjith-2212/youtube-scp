@@ -4,6 +4,8 @@ import time
 import random
 import os
 
+from .utils import ytdlp_bin
+
 DENO_PATH = "/home/ubuntu/.deno/bin"
 
 
@@ -11,8 +13,16 @@ class VideoEnumerator:
     def __init__(self, config, logger):
         self.logger = logger
         self.max_videos = config["processing"]["max_videos_per_channel"]
-        self.delay_min = config["processing"]["request_delay_min"]
-        self.delay_max = config["processing"]["request_delay_max"]
+        # Bounds on source length. The ceiling used to be a hardcoded 2 hours,
+        # which silently dropped every multi-hour upload -- on the AI audiobook
+        # channels that is most of the catalogue, and those are the longest and
+        # most speech-dense sources available.
+        self.min_duration = float(config["processing"].get("min_video_duration_sec", 30))
+        self.max_duration = float(config["processing"].get("max_video_duration_sec", 36000))
+        # Enumeration is flat-playlist metadata, far cheaper than extraction,
+        # so it gets its own small jitter rather than the global download budget.
+        self.delay_min = config["processing"].get("request_delay_min", 1.0)
+        self.delay_max = config["processing"].get("request_delay_max", 3.0)
         self.env = os.environ.copy()
         self.env["PATH"] = f"{DENO_PATH}:{self.env.get('PATH', '')}"
 
@@ -29,9 +39,17 @@ class VideoEnumerator:
 
     def _resolve_channel(self, channel_name):
         """Resolve channel name to a channel/playlist URL."""
+        # An @handle or URL identifies one channel exactly, so skip the search:
+        # for generic names ytsearch can resolve to a different channel that
+        # merely mentions the term, which would quietly mix in the wrong source.
+        direct = self._direct_channel_url(channel_name)
+        if direct:
+            self.logger.info(f"Using '{channel_name}' directly -> {direct}")
+            return direct
+
         # Try direct ytsearch for the channel
         cmd = [
-            "yt-dlp",
+            ytdlp_bin(),
             "--flat-playlist",
             "--print", "%(channel_url)s",
             "--playlist-items", "1",
@@ -64,7 +82,7 @@ class VideoEnumerator:
         # Last resort: search and get the channel from first result
         search_url = f"https://www.youtube.com/results?search_query={channel_name.replace(' ', '+')}"
         cmd = [
-            "yt-dlp",
+            ytdlp_bin(),
             "--flat-playlist",
             "--print", "%(url)s %(channel_url)s",
             "--playlist-items", "1:1",
@@ -84,9 +102,23 @@ class VideoEnumerator:
         self.logger.warning(f"Could not resolve channel: {channel_name}")
         return None
 
+    @staticmethod
+    def _direct_channel_url(channel):
+        """Channel URL for an @handle or URL entry, else None for a plain name."""
+        entry = channel.strip()
+        if entry.startswith("@") and " " not in entry:
+            return f"https://www.youtube.com/{entry}/videos"
+        if entry.startswith(("http://", "https://")) or entry.startswith("www.youtube.com"):
+            url = entry if entry.startswith("http") else f"https://{entry}"
+            # /watch and /playlist URLs are not channels; leave those alone.
+            if "/watch" in url or "/playlist" in url:
+                return None
+            return url.rstrip("/")
+        return None
+
     def _check_url_exists(self, url):
         cmd = [
-            "yt-dlp",
+            ytdlp_bin(),
             "--flat-playlist",
             "--print", "%(id)s",
             "--playlist-items", "1",
@@ -106,7 +138,7 @@ class VideoEnumerator:
             channel_url = channel_url.rstrip("/") + "/videos"
 
         cmd = [
-            "yt-dlp",
+            ytdlp_bin(),
             "--flat-playlist",
             "--print", "%(id)s\t%(title)s\t%(duration)s",
             "--playlist-items", f"1:{self.max_videos}",
@@ -136,20 +168,31 @@ class VideoEnumerator:
                     title = parts[1]
                     duration = parts[2] if len(parts) > 2 else None
 
-                    # Skip very short videos (likely intros) and very long (streams)
+                    # Skip very short videos (likely intros) and anything past
+                    # the configured ceiling (live streams, 24/7 loops).
                     if duration and duration != "NA":
                         try:
                             dur = float(duration)
-                            if dur < 30 or dur > 7200:
+                            if dur < self.min_duration or dur > self.max_duration:
                                 continue
                         except ValueError:
                             pass
+
+                    # Duration is kept, not just used as a filter: the AV
+                    # pipeline's long-clip mode places its clips at fractions
+                    # of the runtime, and looking it up again per video would
+                    # cost an extra extraction against a throttled IP.
+                    try:
+                        duration_val = float(duration) if duration and duration != "NA" else None
+                    except ValueError:
+                        duration_val = None
 
                     videos.append({
                         "video_id": video_id,
                         "title": title,
                         "channel": channel_name,
                         "url": f"https://www.youtube.com/watch?v={video_id}",
+                        "duration": duration_val,
                     })
 
             self.logger.info(f"Enumerated {len(videos)} videos from '{channel_name}'")

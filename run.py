@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from src.utils import load_config, load_channels, setup_logger
 from src.pipeline import run_language
+from src.notify import notify, notify_done, notify_error
 
 shutdown_requested = False
 
@@ -186,6 +187,17 @@ def main():
     pending_langs = [l for l in languages if l not in completed_langs]
     logger.info(f"Languages to process: {len(pending_langs)} (skipping {len(completed_langs)} already done)")
 
+    notify(
+        config,
+        "Scrape started",
+        f"{len(pending_langs)} language(s): {', '.join(pending_langs)}\n"
+        f"{parallel_langs} pipeline(s) in parallel, "
+        f"{config['processing']['max_segments_per_video']} segments/video, "
+        f"{config['processing']['global_requests_per_min']} req/min",
+        tags=["arrow_forward"],
+    )
+
+    t_start = time.time()
     results = []
     with ProcessPoolExecutor(max_workers=parallel_langs) as executor:
         futures = {}
@@ -201,9 +213,17 @@ def main():
                 results.append(result)
                 completed_langs.add(lang)
                 logger.info(f"Completed {lang}: {result}")
+                notify_done(
+                    config,
+                    f"{lang} complete",
+                    f"{result['total_segments']} segments, "
+                    f"{result['total_hours']:.2f} hours\n"
+                    f"{result.get('rate_limited_drops', 0)} dropped to rate limiting",
+                )
             except Exception as e:
                 logger.error(f"Pipeline failed for {lang}: {e}", exc_info=True)
                 results.append({"language": lang, "error": str(e)})
+                notify_error(config, f"{lang} FAILED", f"{type(e).__name__}: {e}")
 
             # Save progress after each language completes
             with open(progress_file, "w") as f:
@@ -221,6 +241,17 @@ def main():
         logger.info(f"  {r}")
     logger.info(f"TOTAL: {total_segments} segments, {total_hours:.2f} hours")
     logger.info("=" * 60)
+
+    elapsed = (time.time() - t_start) / 3600
+    failed = [r["language"] for r in results if "error" in r]
+    send = notify_error if failed else notify_done
+    send(
+        config,
+        "Run finished" if not failed else f"Run finished, {len(failed)} failed",
+        f"{total_segments} segments, {total_hours:.2f} hours of audio\n"
+        f"elapsed {elapsed:.1f} h"
+        + (f"\nfailed: {', '.join(failed)}" if failed else ""),
+    )
 
 
 if __name__ == "__main__":

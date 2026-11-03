@@ -3,6 +3,10 @@
 config/settings.yaml
 cookies/
 *.cookies.txt
+# Cookie exports are full account credentials -- catch them wherever they land,
+# not just under cookies/.
+account*.txt
+cookies*.txt
 
 # Scraped audio and pipeline state (45G+)
 output/

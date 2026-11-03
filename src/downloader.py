@@ -3,6 +3,8 @@ import subprocess
 import random
 from pathlib import Path
 
+from .utils import ytdlp_bin
+
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -29,11 +31,14 @@ class RateLimitedError(Exception):
 
 
 class AudioDownloader:
-    def __init__(self, config, logger, proxy=None):
+    def __init__(self, config, logger, proxy=None, sample_rate=None):
         self.config = config
         self.logger = logger
         self.proxy = proxy
-        self.sample_rate = config["audio"]["sample_rate"]
+        # The AV pipeline only needs a 16 kHz copy to run VAD over -- the clips
+        # it keeps are cut from the muxed video later -- and a multi-hour film
+        # at 48 kHz is a ~800 MB WAV, so it overrides this.
+        self.sample_rate = sample_rate or config["audio"]["sample_rate"]
         self.env = os.environ.copy()
         self.env["PATH"] = f"{DENO_PATH}:{self.env.get('PATH', '')}"
 
@@ -71,7 +76,7 @@ class AudioDownloader:
 
     def _try_download(self, video_id, url, dl_template, output_dir, strategy):
         cmd = [
-            "yt-dlp",
+            ytdlp_bin(),
             "--no-playlist",
             "--js-runtimes", f"deno:{DENO_PATH}/deno",
             *strategy["args"],
