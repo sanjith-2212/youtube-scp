@@ -10,3 +10,4 @@ librosa
 torch
 torchaudio
 silero-vad
+azure-storage-blob

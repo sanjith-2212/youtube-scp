@@ -1,11 +1,25 @@
 # Copy to settings.yaml and fill in. settings.yaml is gitignored -- it holds a
-# live API key and internal proxy addresses, neither of which belong in a repo.
+# live API key, a notification URL and internal proxy addresses, none of which
+# belong in a repo.
 youtube_api_key: "YOUR_YOUTUBE_DATA_API_KEY"
 
+# Destination for the real / human dataset.
 s3:
   bucket: "detectifai-data"
   prefix: "real/v1"
   region: "ap-south-1"
+
+# Destination for the fake / AI-generated dataset. Audio and video clips land
+# side by side under <prefix>/{audio,video}/<lang>/ so a pair shares a stem.
+# Credentials come from the SAS file below, not from here.
+azure:
+  container: "detectifai-data"
+  prefix: "fake/youtube-data"
+  audio_subdir: "audio"
+  video_subdir: "video"
+  # Shell-style file holding `export AZURE_STORAGE_ACCOUNT=...` and
+  # `export AZURE_STORAGE_SAS_TOKEN=...`. Anything already exported wins.
+  sas_token_file: "~/.azure_sas_token"
 
 audio:
   sample_rate: 48000
@@ -15,34 +29,136 @@ audio:
   max_segment_duration: 8.0
   min_segment_duration: 1.0
   min_speech_ratio: 0.7
+  # VAD only needs 16 kHz, and the AI films run 1-2.5 hours: downloading the
+  # selection copy at 48 kHz would mean a ~800 MB WAV per video for nothing.
+  vad_sample_rate: 16000
+
+video:
+  # 720p avc1 keeps clips at ~0.7-1.3 MB per 6s and decodes cheaply in a
+  # dataloader; the AI channels upload 4K, so without a cap each clip is ~20 MB.
+  max_height: 720
+  container: "mp4"
+  format_selector: "bestvideo[height<=720][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/best[height<=720]"
+  # Cut on exact timestamps rather than the preceding keyframe, so a short clip
+  # lines up with the audio half it is paired with.
+  force_keyframes: true
+  # Long clips are stream-copied instead. Re-encoding 2 minutes of 720p is slow,
+  # and more importantly it lays this machine's own compression artefacts over
+  # the generation artefacts a detector is supposed to find -- on the fake half
+  # of the dataset that is actively destructive. Starting on the preceding
+  # keyframe costs a few seconds of offset, which a 2 minute clip can absorb
+  # and the measured durations record.
+  force_keyframes_long: false
+  concurrent_fragments: 4
+  # One yt-dlp call downloads a video's clips sequentially, so the ceiling has
+  # to grow with the count. 10x120s clips measured ~735s; this gives ~2700s.
+  # Still not always enough: 39 of 841 videos timed out on the 2026-11-02 run.
+  clip_timeout_base_sec: 300
+  clip_timeout_per_clip_sec: 240
+  clip_audio_sample_rate: 48000
 
 processing:
   num_workers: 24
   downloads_per_ip: 8
-  # Download budget shared by ALL language workers, not per worker. Exit IPs in
-  # a single /24 are throttled by YouTube as one client: ~230 videos in 60 min
-  # tripped the bot check, hence the conservative rpm.
-  global_requests_per_min: 2.5
+  # Download budget shared by ALL language workers, not per worker, and spread
+  # round-robin across the routes in `proxies` -- so it scales with the number
+  # of live routes rather than being a property of one host. YouTube counts the
+  # bot check per IP. 30/min over 3 routes is 10/min each, half the ~20/min per
+  # IP that scripts/ceiling_test.py sustained unchallenged. Drop back toward 12
+  # if a route starts getting challenged.
+  global_requests_per_min: 30
   ratelimit_backoff_base_sec: 900      # first bot check -> 15 min pause
   ratelimit_backoff_max_sec: 5400      # cap escalation at 90 min
   ratelimit_strike_reset_sec: 1800     # 30 min clean -> forget escalation
   max_ratelimit_retries: 3
   max_retries: 3
   backoff_factor: 2.0
+  request_delay_min: 1.0               # jitter between channel enumerations
+  request_delay_max: 3.0
   max_videos_per_channel: 200
+  # Source length bounds for enumeration. The ceiling is deliberately high:
+  # the AI audiobook channels upload multi-hour narrations, and those are the
+  # most speech-dense material available. 10h still excludes 24/7 live loops.
+  min_video_duration_sec: 30
+  max_video_duration_sec: 36000
+  # Stage concurrency. Fetch and upload are I/O bound so threads are cheap;
+  # the GPU stage is always 1, since one L4 cannot be shared. prefetch_videos
+  # bounds the fetch->gpu queue and so bounds staging disk: each queued video
+  # is ~25 MB of WAV.
+  fetch_workers: 4
+  upload_workers: 4
+  prefetch_videos: 8
   whisper_model: "medium"
   whisper_device: "cuda"
-  max_segments_per_video: 5
+  max_segments_per_video: 15
   batch_upload_size: 50
 
-# A null address means "use the host's own egress, no proxy".
+# Overrides for the AI/fake AV pipeline (run_fake.py). Anything omitted falls
+# back to `processing` above, so the two datasets share one rate-limit budget
+# and one set of retry rules.
+av_processing:
+  # "speech" -> 1-8s VAD windows, matching the real dataset's proportions.
+  # "long"   -> fixed-length spans placed across the runtime, for clips far
+  #             longer than any single utterance (a 2 minute clip is picked by
+  #             position, not by speech, so VAD cannot select it).
+  clip_mode: "long"
+
+  # --- long mode ---
+  long_clip_duration_sec: 120
+  # Clips scale with runtime -- one per clip_interval_sec, clamped to the
+  # min/max below. A 7 hour audiobook carries far more distinct material than a
+  # 20 minute upload, but the return per clip falls off (it is one narrator and
+  # one TTS voice throughout), so the count saturates rather than growing
+  # linearly. At 900s: ~1h -> 4 clips, ~2.3h -> 9, anything past ~2.5h -> 10.
+  clip_interval_sec: 900
+  min_clips_per_video: 2
+  max_clips_per_video: 10
+  # Pin the count regardless of length (what --long-clips sets); null = scale.
+  long_clips_per_video: null
+  # Skip this much of each end: these films open on titles and close on
+  # credits, and a clip of either is worthless as a speech/face sample.
+  edge_margin_pct: 5
+  # Transcription of a 2 minute clip costs ~30x what an 8s one does and the
+  # single GPU thread is shared by every fetch worker, so it is opt-out.
+  transcribe_clips: true
+
+  # --- speech mode ---
+  # Clips per video, sampled evenly across its runtime -- same proportion the
+  # real dataset uses (processing.max_segments_per_video).
+  clips_per_video: 15
+  # Clip fetching is network-bound and runs one yt-dlp per video, so a little
+  # more fan-out than the audio-only pipeline; uploads are two files per clip.
+  fetch_workers: 4
+  upload_workers: 6
+  prefetch_videos: 4
+  # Whisper language check. Several AI channels publish in many languages under
+  # one handle, so this stays on to keep the per-language buckets clean -- 123
+  # of 841 videos on the 2026-11-02 English run were genuinely not English.
+  verify_language: true
+  max_videos_per_channel: 200
+
+# A null address means "use the host's own egress, no proxy". Real addresses
+# live in the gitignored settings.yaml.
+#
+# Measured 2026-11-02: YouTube shapes each *connection* to ~0.35-0.45 MB/s
+# regardless of which route it leaves by, so extra routes do not make a single
+# download faster. What they buy is bot-check headroom, which is counted per IP.
+#
+# socks5h:// entries are SSH tunnels opened by scripts/proxy_tunnels.sh; the
+# pipeline probes every proxy at startup (utils.probe_proxy) and drops the dead
+# ones, so leaving an unreachable route configured is safe.
 proxies:
   - name: "local"
     address: null
-  - name: "proxy-1"
-    address: "http://PROXY_HOST_1:8080"
-  - name: "proxy-2"
-    address: "http://PROXY_HOST_2:8080"
+  - name: "tunnel-1"
+    address: "socks5h://127.0.0.1:1081"
+  - name: "tunnel-2"
+    address: "socks5h://127.0.0.1:1082"
+
+# Anyone holding this URL can read every notification, so it lives in the
+# gitignored settings.yaml. Override at runtime with NTFY_URL.
+notifications:
+  ntfy_url: ""    # e.g. https://ntfy.sh/your-private-topic
 
 logging:
   level: "INFO"

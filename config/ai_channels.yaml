@@ -1,0 +1,38 @@
+# Channels publishing AI-generated video/audio, grouped by the spoken language.
+# Same shape as channels.yaml: a plain name is resolved by search, while an
+# @handle or full URL is used directly (and is the safer form -- search can
+# land on the wrong channel for generic names).
+#
+# These feed the fake / AI half of the dataset. Keep a channel out of here
+# unless its output is actually AI-generated: a mislabelled channel silently
+# poisons the fake class with real footage.
+#
+# Note on what each yields. The narration channels below are AI voice over
+# largely static or slow-panning imagery, so they are a strong source for the
+# *audio* half and a weak one for the *video* half -- there is little facial
+# motion to learn from. The film/drama channels are the opposite. Both are
+# collected; the metadata records speech_ratio and the source channel, so
+# either half can be filtered downstream.
+
+en:
+# --- AI-narrated audiobooks / long-form story channels ---
+# Long uploads (several hours) and near-continuous speech, so these are the
+# richest source of synthetic-voice audio here.
+- https://www.youtube.com/@QuietNightsAudiobooks
+- https://www.youtube.com/@gatesofimagination
+- https://www.youtube.com/@ThousandTalesTube
+- https://www.youtube.com/@TheShadowCaravan
+- https://www.youtube.com/@ReelBooksHub
+- https://www.youtube.com/@free_audiobook_67
+- https://www.youtube.com/@videobooks_eng
+- https://www.youtube.com/@CriticalReaderBooks
+
+# --- AI narrative / documentary / film channels ---
+# More visual motion, lower speech density.
+- https://www.youtube.com/@TheColdOpenn
+- https://www.youtube.com/@HistoricalAII
+- https://www.youtube.com/@JusticeDelayed3
+- https://www.youtube.com/@PathToProsperityTV
+- https://www.youtube.com/@uprightfilmsafrica
+# Feature-length AI films; the channel the pipeline was first validated on.
+- https://www.youtube.com/@epicaifilms2024
